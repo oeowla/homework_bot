@@ -1,15 +1,12 @@
 import logging
 import os
 import time
+from http import HTTPStatus
+
 import requests
 from dotenv import load_dotenv
-from telebot import TeleBot
-from exceptions import (
-    MissingTokenError,
-    APIRequestError,
-    ParseStatusError,
-    SendMessageError
-)
+from telebot import TeleBot, types
+
 
 load_dotenv()
 
@@ -30,15 +27,12 @@ HOMEWORK_VERDICTS = {
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
 
-# Настройки логирования:
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('bot.log', encoding='utf-8')
-    ]
+ERROR_MESSAGE_TEMPLATE = (
+    "Ошибка при запросе к API. URL: {url}, "
+    "headers: {headers}, params: {params}. Ошибка: {error}"
 )
+
+# Настройки логирования:
 logger = logging.getLogger(__name__)
 
 
@@ -54,13 +48,10 @@ def check_tokens():
         if not value
     ]
     if missing_tokens:
-        logger.critical(
-            'Отсутствуют обязательные переменные окружения: %s',
-            ', '.join(missing_tokens)
-        )
-        raise MissingTokenError(
-            f'Отсутствуют переменные окружения: {", ".join(missing_tokens)}'
-        )
+        error_message = 'Отсутствуют переменные окружения:'
+        f'{", ".join(missing_tokens)}'
+        logger.critical(error_message)
+        raise ValueError(error_message)
 
 
 def send_message(bot, message):
@@ -68,26 +59,34 @@ def send_message(bot, message):
     try:
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
         logger.debug('Сообщение отправлено: %s', message)
-    except Exception as error:
+    except (types.TelegramError, ConnectionError) as error:
         logger.error('Ошибка при отправке сообщения: %s', error)
-        raise SendMessageError(f'Ошибка при отправке сообщения: {error}')
+        raise ConnectionError(f'Ошибка при отправке сообщения: {error}')
 
 
 def get_api_answer(timestamp):
     """Запрос к эндпоинту, возвращает его ответ."""
+    params = {'from_date': timestamp}
     try:
-        homework_statuses = requests.get(
+        response = requests.get(
             ENDPOINT,
             headers=HEADERS,
-            params={'from_date': timestamp}
+            params=params
         )
-        if homework_statuses.status_code != 200:
-            raise APIRequestError(
-                f"API возвращает код {homework_statuses.status_code}"
-            )
-        return homework_statuses.json()
     except requests.RequestException as error:
-        raise APIRequestError(f"Ошибка при запросе к API: {error}")
+        error_message = ERROR_MESSAGE_TEMPLATE.format(
+            url=ENDPOINT,
+            headers=HEADERS,
+            params=params,
+            error=error
+        )
+        logger.error(error_message)
+        raise ConnectionError(error_message)
+    if response.status_code != HTTPStatus.OK:
+        error_message = f"API возвращает код {response.status_code}"
+        logger.error(error_message)
+        raise requests.HTTPError(error_message)
+    return response.json()
 
 
 def check_response(response):
@@ -114,17 +113,11 @@ def parse_status(homework):
         'lesson_name'
     )
     if not homework_name:
-        raise ParseStatusError(
-            'Отсутствует ключ homework_name или lesson_name'
-        )
-    homework_status = homework.get('status')
-    if not homework_status:
-        raise ParseStatusError('Отсутствует ключ status')
-    if homework_status not in HOMEWORK_VERDICTS:
-        raise ParseStatusError(
-            f'Неизвестный статус домашней работы: {homework_status}'
-        )
-    verdict = HOMEWORK_VERDICTS[homework_status]
+        raise ValueError('Отсутствует название домашней работы')
+    status = homework.get('status')
+    if status not in HOMEWORK_VERDICTS:
+        raise ValueError(f'Неизвестный статус домашней работы: {status}')
+    verdict = HOMEWORK_VERDICTS[status]
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
@@ -132,7 +125,7 @@ def main():
     """Основная логика работы бота."""
     try:
         check_tokens()
-    except MissingTokenError as error:
+    except ValueError as error:
         logger.critical(error)
         raise SystemExit(error)
 
@@ -164,4 +157,12 @@ def main():
 
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler('bot.log', encoding='utf-8')
+        ]
+    )
     main()
