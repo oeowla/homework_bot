@@ -7,6 +7,17 @@ import requests
 from dotenv import load_dotenv
 from telebot import TeleBot, types
 
+# Константы сообщений
+MISSING_TOKENS_MSG = 'Отсутствуют переменные окружения: {}'
+SEND_MESSAGE_ERROR = 'Ошибка при отправке сообщения: {}'
+API_RETURN_ERROR = "API возвращает код {}"
+API_RESPONSE_NOT_DICT = "Ответ API должен быть словарем"
+HOMEWORKS_FIELD_ERROR = "Отсутствует или некорректно поле homeworks"
+CURRENT_DATE_FIELD_ERROR = "Отсутствует поле current_date"
+HOMEWORK_STRUCTURE_ERROR = "Некорректная структура домашней работы"
+HOMEWORK_NAME_ERROR = 'Отсутствует название домашней работы'
+UNKNOWN_STATUS_ERROR = 'Неизвестный статус домашней работы: {}'
+PROGRAM_ERROR_MSG = 'Сбой в работе программы: {}'
 
 load_dotenv()
 
@@ -48,9 +59,7 @@ def check_tokens():
         if not value
     ]
     if missing_tokens:
-        error_message = 'Отсутствуют переменные окружения:'
-        f'{", ".join(missing_tokens)}'
-        logger.critical(error_message)
+        error_message = MISSING_TOKENS_MSG.format(", ".join(missing_tokens))
         raise ValueError(error_message)
 
 
@@ -60,8 +69,7 @@ def send_message(bot, message):
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
         logger.debug('Сообщение отправлено: %s', message)
     except (types.TelegramError, ConnectionError) as error:
-        logger.error('Ошибка при отправке сообщения: %s', error)
-        raise ConnectionError(f'Ошибка при отправке сообщения: {error}')
+        raise ConnectionError(SEND_MESSAGE_ERROR.format(error))
 
 
 def get_api_answer(timestamp):
@@ -73,38 +81,39 @@ def get_api_answer(timestamp):
             headers=HEADERS,
             params=params
         )
+        if response.status_code != HTTPStatus.OK:
+            raise requests.HTTPError(
+                API_RETURN_ERROR.format(response.status_code)
+            )
+        try:
+            return response.json()
+        except ValueError as error:
+            raise ValueError(f"Ошибка декодирования JSON: {error}")
     except requests.RequestException as error:
-        error_message = ERROR_MESSAGE_TEMPLATE.format(
+        raise ConnectionError(ERROR_MESSAGE_TEMPLATE.format(
             url=ENDPOINT,
             headers=HEADERS,
             params=params,
             error=error
-        )
-        logger.error(error_message)
-        raise ConnectionError(error_message)
-    if response.status_code != HTTPStatus.OK:
-        error_message = f"API возвращает код {response.status_code}"
-        logger.error(error_message)
-        raise requests.HTTPError(error_message)
-    return response.json()
+        ))
 
 
 def check_response(response):
     """Проверяет ответ API на соответствие документации."""
     if not isinstance(response, dict):
-        raise TypeError("Ответ API должен быть словарем")
+        raise TypeError(API_RESPONSE_NOT_DICT)
     if 'homeworks' not in response or not isinstance(
         response['homeworks'], list
     ):
-        raise TypeError("Отсутствует или некорректно поле homeworks")
+        raise TypeError(HOMEWORKS_FIELD_ERROR)
     if 'current_date' not in response:
-        raise KeyError("Отсутствует поле current_date")
+        raise KeyError(CURRENT_DATE_FIELD_ERROR)
     if response['homeworks']:
         homework = response['homeworks'][0]
         if 'status' not in homework or (
             'homework_name' not in homework and 'lesson_name' not in homework
         ):
-            raise KeyError("Некорректная структура домашней работы")
+            raise KeyError(HOMEWORK_STRUCTURE_ERROR)
 
 
 def parse_status(homework):
@@ -113,10 +122,10 @@ def parse_status(homework):
         'lesson_name'
     )
     if not homework_name:
-        raise ValueError('Отсутствует название домашней работы')
+        raise ValueError(HOMEWORK_NAME_ERROR)
     status = homework.get('status')
     if status not in HOMEWORK_VERDICTS:
-        raise ValueError(f'Неизвестный статус домашней работы: {status}')
+        raise ValueError(UNKNOWN_STATUS_ERROR.format(status))
     verdict = HOMEWORK_VERDICTS[status]
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
@@ -144,7 +153,7 @@ def main():
                 logger.debug('Нет новых статусов домашних работ')
             timestamp = response.get('current_date', timestamp)
         except Exception as error:
-            message = f'Сбой в работе программы: {error}'
+            message = PROGRAM_ERROR_MSG.format(error)
             if str(error) != last_error:
                 try:
                     send_message(bot, message)
