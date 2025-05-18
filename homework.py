@@ -81,14 +81,6 @@ def get_api_answer(timestamp):
             headers=HEADERS,
             params=params
         )
-        if response.status_code != HTTPStatus.OK:
-            raise requests.HTTPError(
-                API_RETURN_ERROR.format(response.status_code)
-            )
-        try:
-            return response.json()
-        except ValueError as error:
-            raise ValueError(f"Ошибка декодирования JSON: {error}")
     except requests.RequestException as error:
         raise ConnectionError(ERROR_MESSAGE_TEMPLATE.format(
             url=ENDPOINT,
@@ -96,6 +88,14 @@ def get_api_answer(timestamp):
             params=params,
             error=error
         ))
+    if response.status_code != HTTPStatus.OK:
+        raise requests.HTTPError(
+            API_RETURN_ERROR.format(response.status_code)
+        )
+    try:
+        return response.json()
+    except ValueError as error:
+        raise ValueError(f"Ошибка декодирования JSON: {error}")
 
 
 def check_response(response):
